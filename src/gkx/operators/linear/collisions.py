@@ -544,6 +544,11 @@ def _landau_pair_frequency(nu: Any, density: Any, charge: Any, ns: int, dtype: A
     return rate[:, None] * weight[None, :] / weight[:, None]
 
 
+#: Largest moment count ``Ns Nl Nm`` for which :meth:`LandauBlocks.apply` uses
+#: the composed dense matrix; above it the block-sparse factors save flops.
+_LANDAU_DENSE_MAX = 128
+
+
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class LandauBlocks:
@@ -590,7 +595,31 @@ class LandauBlocks:
         )
 
     def apply(self, hamiltonian: jnp.ndarray, **frequencies: Any) -> jnp.ndarray:
-        """Apply the operator to the ``(s, l, m, ...)`` response ``H``."""
+        """Apply the operator to the ``(s, l, m, ...)`` response ``H``.
+
+        Up to ``_LANDAU_DENSE_MAX`` moments in all, the blocks are first composed
+        into the dense ``(s l m) x (s l m)`` matrix and applied as one product:
+        the operator then reads and writes the state once instead of once per
+        block batch, which dominates its cost at small moment counts.
+        """
+
+        state = jnp.asarray(hamiltonian)
+        ns, nl, nm = map(int, state.shape[:3])
+        if ns * nl * nm <= _LANDAU_DENSE_MAX and state.ndim > 3:
+            n = ns * nl * nm
+            dtype = jnp.real(state).dtype
+            eye = jnp.eye(n, dtype=dtype).reshape(ns, nl, nm, n)
+            dense = self._apply_blocks(eye, **frequencies).reshape(n, n)
+            out = jnp.matmul(
+                dense.astype(state.dtype),
+                state.reshape(n, -1),
+                precision=jax.lax.Precision.HIGHEST,
+            )
+            return out.reshape(state.shape)
+        return self._apply_blocks(state, **frequencies)
+
+    def _apply_blocks(self, hamiltonian: jnp.ndarray, **frequencies: Any) -> jnp.ndarray:
+        """Apply the operator through its block-sparse factors."""
 
         state = jnp.asarray(hamiltonian)
         ns, nl, nm = map(int, state.shape[:3])
