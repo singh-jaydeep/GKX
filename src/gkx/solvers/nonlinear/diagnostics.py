@@ -1166,8 +1166,6 @@ def _refuse_uncovered_compact_modes(
         'grid.ky_layout = "full"': cache.ny_full is None or rows == cache.ny_full,
         "the non-twisting flux tube": cache.ntft_m0 is not None,
         "per-species moment counts": cache.groups is not None,
-        "Landau or Sugama collision blocks": cache.landau_pairs is not None,
-        "time.collision_split": options.collision_split,
         "time.compressed_real_fft = false": not options.compressed_real_fft,
         "a fixed mode or an external field": options.fixed_mode_ky_index is not None
         or options.external_phi is not None,
