@@ -619,16 +619,16 @@ def _shared_linked_streaming_hypercollisions(
     return weights.streaming * transformed[0], local + transformed[1]
 
 
-def _dissipation_contributions(
+def _collision_term(
     G: jnp.ndarray,
     H: jnp.ndarray,
     cache: LinearCache,
     species: _SpeciesArrays,
-    scalars: _ScalarParams,
     weights: _TermWeights,
     hermite_window: HermiteWindow | None = None,
-    hypercollisions: jnp.ndarray | None = None,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> jnp.ndarray:
+    """The collision operator applied to ``H``: Landau blocks or the cached model."""
+
     pairs = getattr(cache, "landau_pairs", None)
     landau = pairs is not None
     if landau and _is_static_zero(weights.collisions, jnp.real(G).dtype):
@@ -672,6 +672,20 @@ def _dissipation_contributions(
                 else None
             ),
         )
+    return collisions
+
+
+def _dissipation_contributions(
+    G: jnp.ndarray,
+    H: jnp.ndarray,
+    cache: LinearCache,
+    species: _SpeciesArrays,
+    scalars: _ScalarParams,
+    weights: _TermWeights,
+    hermite_window: HermiteWindow | None = None,
+    hypercollisions: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    collisions = _collision_term(G, H, cache, species, weights, hermite_window)
     if hypercollisions is None:
         hypercollisions = hypercollisions_contribution(
             G,
@@ -897,6 +911,63 @@ def assemble_rhs_cached(
         _assemble_normalized_rhs(state, cache, species, scalars, weights, rhs_fields),
         rhs_fields.fields,
     )
+
+
+@functools.partial(jax.jit, static_argnames=("electrostatic",))
+def assemble_collisions_cached(
+    G: jnp.ndarray,
+    cache: LinearCache,
+    params: LinearParams,
+    terms: TermConfig,
+    external_phi: jnp.ndarray | float | None = None,
+    *,
+    electrostatic: bool = True,
+) -> jnp.ndarray:
+    """The collision term of the RHS alone, for a split collision step.
+
+    Solves the fields, builds ``H`` and applies the collision operator; the
+    other linear terms, which a full assembly would compute and weight by zero,
+    are not evaluated. Equal to ``assemble_rhs_cached`` with every weight but
+    ``collisions`` zero.
+
+    Parameters
+    ----------
+    G : array, shape (Ns, Nl, Nm, Nky, Nkx, Nz) or without the species axis
+        Gyrokinetic state.
+    cache, params : LinearCache, LinearParams
+        Cached operators and run parameters.
+    terms : TermConfig
+        Term weights; ``collisions`` and the field weights are used.
+    external_phi : array or float, optional
+        Externally imposed potential added to the solved one.
+    electrostatic : bool
+        Build ``H`` from ``phi`` alone.
+
+    Returns
+    -------
+    dG : array, shape of ``G``
+        Collision contribution to ``dG/dt``.
+    """
+
+    state = _normalized_rhs_state(G, cache)
+    species = _species_arrays(params, state.G.shape[0], state.real_dtype)
+    weights = _term_weights(params, terms, state.real_dtype)
+    rhs_fields = _solved_rhs_fields(
+        state.G,
+        cache,
+        params,
+        terms,
+        species,
+        weights,
+        use_custom_vjp=True,
+        external_phi=external_phi,
+        force_electrostatic_fields=electrostatic,
+        build_H_fn=build_H,
+    )
+    dG = _collision_term(state.G, rhs_fields.H, cache, species, weights)
+    if state.squeeze_species:
+        dG = dG[0]
+    return dG.astype(state.out_dtype)
 
 
 def assemble_rhs_cached_with_fields(
@@ -1162,6 +1233,7 @@ def assemble_rhs_terms_cached(
 
 
 __all__ = [
+    "assemble_collisions_cached",
     "_RHSFields",
     "_RHSState",
     "_ScalarParams",

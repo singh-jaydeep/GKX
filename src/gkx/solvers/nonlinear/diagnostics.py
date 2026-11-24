@@ -115,6 +115,7 @@ from gkx.solvers.time_explicit import (
 )
 from gkx.terms.assembly import (
     _is_static_zero,
+    assemble_collisions_cached,
     assemble_rhs_cached_electrostatic_jit,
     assemble_rhs_cached_jit,
     compute_fields_cached,
@@ -670,8 +671,33 @@ def _explicit_collision_split_fn(
 ) -> Callable[..., jnp.ndarray]:
     """Split update: one forward-Euler collision step, then the diagonal damping."""
 
+    # Only the collision term is on: assemble it alone rather than the whole
+    # linear RHS with zero weights.
+    collisions_only = (
+        collision_terms is not None
+        and getattr(cache, "groups", None) is None
+        and all(
+            _is_static_zero(getattr(collision_terms, name))
+            for name in (
+                "streaming", "mirror", "curvature", "gradb", "diamagnetic",
+                "hypercollisions", "hyperdiffusion", "end_damping", "nonlinear",
+            )
+        )
+    )  # fmt: skip
+
     def apply(G, damping, dt_local, scheme):
-        if collision_terms is not None:
+        if collisions_only:
+            dC = assemble_collisions_cached(
+                G,
+                cache,
+                params,
+                collision_terms,
+                external_phi,
+                electrostatic=_is_static_zero(collision_terms.apar)
+                and _is_static_zero(collision_terms.bpar),
+            )
+            G = G + dt_local * dC.astype(G.dtype)
+        elif collision_terms is not None:
             dC, _ = nonlinear_rhs_cached(
                 G, cache, params, collision_terms, external_phi=external_phi
             )
