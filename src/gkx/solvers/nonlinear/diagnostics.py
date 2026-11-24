@@ -675,7 +675,8 @@ def _explicit_collision_split_fn(
     # linear RHS with zero weights.
     collisions_only = (
         collision_terms is not None
-        and getattr(cache, "groups", None) is None
+        and isinstance(cache, LinearCache)
+        and cache.groups is None
         and all(
             _is_static_zero(getattr(collision_terms, name))
             for name in (
